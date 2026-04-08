@@ -1,6 +1,6 @@
 # ember-test-runner
 
-Run Ember QUnit tests via the dev server
+Run Ember QUnit tests headlessly via Chrome DevTools Protocol. Requires a running `ember serve` dev server.
 
 ## Setup
 
@@ -10,9 +10,14 @@ npm install
 
 ## Usage
 
-Start your dev server first.
-
 ```bash
-npx tsx index.ts run "my-page"
+npx tsx index.ts <command>
 ```
+
+| Command             | Description                       |
+|---------------------|-----------------------------------|
+| `run [filter]`      | Run tests and wait for results    |
+| `eval <expression>` | Evaluate JS in the test page      |
+| `screenshot`        | Screenshot the test page          |
+| `clean`             | Kill the headless Chrome instance |
 
