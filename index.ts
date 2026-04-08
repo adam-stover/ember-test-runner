@@ -159,7 +159,7 @@ async function handleCompletedTests(Runtime: CDP.Client['Runtime']) {
 }
 
 async function run(filter?: string): Promise<void> {
-    await isDevServerRunning();
+    if (!await isDevServerRunning()) process.exit(1);
     await launchChrome();
 
 	const client = await getTestTab();
