@@ -1,6 +1,9 @@
 {
     "compilerOptions": {
-        "types": ["node"]
+        "types": ["node"],
+        "outDir": "./dist",
+        "module": "nodenext",
+        "moduleResolution": "nodenext"
     }
 }
 

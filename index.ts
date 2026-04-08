@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';

@@ -5,6 +5,15 @@
   "license": "MIT",
   "author": "Adam Stover",
   "type": "module",
+  "bin": {
+    "ember-test-runner": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc"
+  },
   "devDependencies": {
     "@types/chrome-remote-interface": "^0.33.0",
     "@types/node": "^25.5.2",
