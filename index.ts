@@ -1,8 +1,8 @@
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import CDP from 'chrome-remote-interface';
-import * as ChromeLauncher from 'chrome-launcher';
+import { launch } from 'chrome-launcher';
 
 const CHROME_PORT = 9222;
 const DEV_SERVER = 'http://localhost:4200';
@@ -38,11 +38,10 @@ async function launchChrome(): Promise<void> {
     if (await isChromeRunning()) return;
 
 	stderr('Launching headless Chrome...');
-	await ChromeLauncher.launch({
-    	startingUrl: DEV_SERVER,
+	await launch({
+    	port: CHROME_PORT,
     	chromeFlags: [
     		'--headless',
-    		`--remote-debugging-port=${CHROME_PORT}`,
     	],
 	});
 }
@@ -103,7 +102,7 @@ async function screenshot(): Promise<void> {
 
 	const { data } = await Page.captureScreenshot({ format: 'png' });
 	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-	const path = join(tmpdir(), `ember-test-${timestamp}`);
+	const path = join(tmpdir(), `ember-test-${timestamp}.png`);
 	await writeFile(path, Buffer.from(data, 'base64'));
 	stdout(path);
 	await client.close();
@@ -180,9 +179,12 @@ async function run(filter?: string): Promise<void> {
 	const url = `${DEV_SERVER}/tests?${params}`;
 
 	stderr(url);
-	await Page.navigate({ url });
+	const navigateResult = await Page.navigate({ url });
+	if (navigateResult.errorText) {
+    	stderr(`Error navigating: ${navigateResult.errorText}`);
+    	process.exit(1);
+	}
 	await Page.loadEventFired();
-	await sleep(1000);
 
 	const start = Date.now();
 	let lastProgress = '';
@@ -241,12 +243,12 @@ switch (cmd) {
     default:
         stdout(`Usage: ember-test-runner <command> [args]
 
-               Commands:
-                 run [filter]         Run tests and wait for results
-                 eval <expression>    Evaluate JS in the test page
-                 screenshot           Screenshot the test page
-                 clean                Cleanup after yourself (kill Chrome)
-               `)
+Commands:
+  run [filter]         Run tests and wait for results
+  eval <expression>    Evaluate JS in the test page
+  screenshot           Screenshot the test page
+  clean                Cleanup after yourself (kill Chrome)
+`);
         process.exit(cmd ? 1 : 0);
 }
 
