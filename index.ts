@@ -38,13 +38,13 @@ async function cleanup(): Promise<void> {
 async function launchChrome(): Promise<void> {
     if (await isChromeRunning()) return;
 
-	stderr('Launching headless Chrome...');
-	await launch({
-    	port: CHROME_PORT,
-    	chromeFlags: [
-    		'--headless',
-    	],
-	});
+    stderr('Launching headless Chrome...');
+    await launch({
+        port: CHROME_PORT,
+        chromeFlags: [
+            '--headless',
+        ],
+    });
 }
 
 async function isDevServerRunning(): Promise<boolean> {
@@ -64,8 +64,13 @@ async function getTestTab(): Promise<CDP.Client> {
 
     const created = await CDP.New({ port: CHROME_PORT, url: 'about:blank' });
 
-	return CDP({ port: CHROME_PORT, target: created });
+    return CDP({ port: CHROME_PORT, target: created });
 }
+
+const CHECK_FAIL_FAST_SCRIPT = `(() => {
+    const failed = document.querySelector('#qunit-tests > li.fail');
+    return !!failed;
+})()`;
 
 const CHECK_STATUS_SCRIPT = `(() => {
     const banner = document.getElementById('qunit-banner');
@@ -82,10 +87,10 @@ const EXTRACT_RESULTS_SCRIPT = `(() => {
         const module = li.querySelector('.module-name')?.textContent || '';
         const name = li.querySelector('.test-name')?.textContent || '';
         const assertions = [...li.querySelectorAll('.qunit-assert-list li.fail')].map(a => ({
-        	message: a.querySelector('.test-message')?.textContent || '',
-        	expected: a.querySelector('.test-expected pre')?.textContent || '',
-        	actual: a.querySelector('.test-actual pre')?.textContent || '',
-        	source: a.querySelector('.test-source pre')?.textContent || '',
+            message: a.querySelector('.test-message')?.textContent || '',
+            expected: a.querySelector('.test-expected pre')?.textContent || '',
+            actual: a.querySelector('.test-actual pre')?.textContent || '',
+            source: a.querySelector('.test-source pre')?.textContent || '',
         }));
         return { module, name, assertions };
     });
@@ -101,12 +106,12 @@ async function screenshot(): Promise<void> {
     const client = await getTestTab();
     const { Page } = client;
 
-	const { data } = await Page.captureScreenshot({ format: 'png' });
-	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-	const path = join(tmpdir(), `ember-test-${timestamp}.png`);
-	await writeFile(path, Buffer.from(data, 'base64'));
-	stdout(path);
-	await client.close();
+    const { data } = await Page.captureScreenshot({ format: 'png' });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const path = join(tmpdir(), `ember-test-${timestamp}.png`);
+    await writeFile(path, Buffer.from(data, 'base64'));
+    stdout(path);
+    await client.close();
 }
 
 async function evaluate(expression: string): Promise<void> {
@@ -128,155 +133,218 @@ async function evaluate(expression: string): Promise<void> {
     }
 
     const output = (result.value && typeof result.value === 'object')
-    	? JSON.stringify(result.value, null, 2)
-    	: result.value;
+        ? JSON.stringify(result.value, null, 2)
+        : result.value;
     stdout(output);
-	await client.close();
+    await client.close();
 }
 
-async function handleCompletedTests(Runtime: CDP.Client['Runtime']) {
+function extractTestSource(source: string): string {
+    // Find the first frame pointing to a test file, strip the URL noise
+    const lines = source.split('\n');
+    for (const line of lines) {
+        const match = line.match(/\/(tests\/[^?]+)\??[^:]*:(\d+):\d+/);
+        if (match) return `at ${match[1]}:${match[2]}`;
+    }
+    // Fallback: try to extract any .gjs/.js file reference
+    for (const line of lines) {
+        const match = line.match(/\/([^/]+\.(?:gjs|gts|js|ts))\??[^:]*:(\d+):\d+/);
+        if (match) return `at ${match[1]}:${match[2]}`;
+    }
+    return source.trim().split('\n')[0];
+}
+
+async function handleCompletedTests(Runtime: CDP.Client['Runtime'], quiet = false) {
     const { result } = await Runtime.evaluate({
         expression: EXTRACT_RESULTS_SCRIPT,
         returnByValue: true,
     });
 
-	const data = result.value as {
-    	summary: string;
-    	failures: {
-        	module: string;
-        	name: string;
-        	assertions: {
-            	message: string;
-            	expected: string;
-            	actual: string;
-            	source: string;
-        	}[];
-    	}[];
-	};
+    const data = result.value as {
+        summary: string;
+        failures: {
+            module: string;
+            name: string;
+            assertions: {
+                message: string;
+                expected: string;
+                actual: string;
+                source: string;
+            }[];
+        }[];
+    };
 
-	stdout(data.summary);
-	for (const f of data.failures) {
-    	stdout(`\nFAILED: ${f.module}: ${f.name}`);
-    	for (const a of f.assertions) {
-        	if (a.message)  stdout(`  ${a.message}`);
-        	if (a.expected) stdout(`  Expected: ${a.expected}`);
-        	if (a.actual)   stdout(`  Actual: ${a.actual}`);
-        	if (a.source)   stdout(`  Source: ${a.source.trim()}`);
-    	}
-	}
+    stdout(data.summary);
+    for (const f of data.failures) {
+        stdout(`\nFAILED: ${f.module}: ${f.name}`);
+        for (const a of f.assertions) {
+            if (a.message)  stdout(`  ${a.message}`);
+            if (a.expected) stdout(`  Expected: ${a.expected}`);
+            if (a.actual)   stdout(`  Actual: ${a.actual}`);
+            if (a.source) {
+                if (quiet) {
+                    stdout(`  ${extractTestSource(a.source)}`);
+                } else {
+                    stdout(`  Source: ${a.source.trim()}`);
+                }
+            }
+        }
+    }
 }
 
-async function run(filter?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
+interface RunOptions {
+    filter?: string;
+    timeoutMs?: number;
+    quiet?: boolean;
+    failFast?: boolean;
+}
+
+async function run({ filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, failFast = false }: RunOptions = {}): Promise<void> {
     if (!await isDevServerRunning()) process.exit(1);
     await launchChrome();
 
-	const client = await getTestTab();
-	const { Page, Runtime } = client;
-	await Page.enable();
-	await Runtime.enable();
+    const client = await getTestTab();
+    const { Page, Runtime } = client;
+    await Page.enable();
+    await Runtime.enable();
 
-	const errors: string[] = [];
-	Runtime.exceptionThrown(({ exceptionDetails }) => {
-		errors.push(exceptionDetails.exception?.description || exceptionDetails.text);
-	});
-	Runtime.consoleAPICalled(({ type, args }) => {
-		if (type === 'error') {
-        	errors.push(args.map(a => a.value || a.description || '').join(' '));
-    	}
-	});
+    const errors: string[] = [];
+    Runtime.exceptionThrown(({ exceptionDetails }) => {
+        errors.push(exceptionDetails.exception?.description || exceptionDetails.text);
+    });
+    Runtime.consoleAPICalled(({ type, args }) => {
+        if (type === 'error') {
+            errors.push(args.map(a => a.value || a.description || '').join(' '));
+        }
+    });
 
-	const params = new URLSearchParams({ nolint: 'true' });
-	if (filter) params.set('filter', filter);
-	const url = `${DEV_SERVER}/tests?${params}`;
+    const params = new URLSearchParams({ nolint: 'true' });
+    if (filter) params.set('filter', filter);
+    const url = `${DEV_SERVER}/tests?${params}`;
 
-	stderr(url);
-	const navigateResult = await Page.navigate({ url });
-	if (navigateResult.errorText) {
-    	stderr(`Error navigating: ${navigateResult.errorText}`);
-    	process.exit(1);
-	}
-	await Page.loadEventFired();
+    if (!quiet) stderr(url);
+    const navigateResult = await Page.navigate({ url });
+    if (navigateResult.errorText) {
+        stderr(`Error navigating: ${navigateResult.errorText}`);
+        process.exit(1);
+    }
+    await Page.loadEventFired();
 
-	const start = Date.now();
-	let lastProgress = '';
+    const start = Date.now();
+    let lastProgress = '';
 
-	while (Date.now() - start < timeoutMs) {
-    	try {
-        	const { result } = await Runtime.evaluate({
-    			expression: CHECK_STATUS_SCRIPT,
-    			returnByValue: true,
-        	});
-        	const s = result.value as {
-            	status: string;
-            	progress?: string;
-        	} | null;
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const { result } = await Runtime.evaluate({
+                expression: CHECK_STATUS_SCRIPT,
+                returnByValue: true,
+            });
+            const s = result.value as {
+                status: string;
+                progress?: string;
+            } | null;
 
-        	if (s?.status === 'pass' || s?.status === 'fail') {
-            	await handleCompletedTests(Runtime);
-            	await client.close();
-            	process.exit(s.status === 'pass' ? 0 : 1);
-        	}
-    		if (s?.progress && s.progress !== lastProgress) {
-        		stderr(`${s.progress}\n`);
-        		lastProgress = s.progress;
-    		}
+            if (s?.status === 'pass' || s?.status === 'fail') {
+                await handleCompletedTests(Runtime, quiet);
+                await client.close();
+                process.exit(s.status === 'pass' ? 0 : 1);
+            }
+
+            // Fail fast: check for any failed test while still running
+            if (failFast && s?.status === 'running') {
+                const { result: ffResult } = await Runtime.evaluate({
+                    expression: CHECK_FAIL_FAST_SCRIPT,
+                    returnByValue: true,
+                });
+                if (ffResult.value === true) {
+                    await handleCompletedTests(Runtime, quiet);
+                    await client.close();
+                    process.exit(1);
+                }
+            }
+
+            if (!quiet && s?.progress && s.progress !== lastProgress) {
+                stderr(`${s.progress}\n`);
+                lastProgress = s.progress;
+            }
         } catch {
             // keep polling baby
         }
 
-    	await sleep(POLL_MS);
-	}
+        await sleep(POLL_MS);
+    }
 
-	stderr('Timeout waiting for tests');
-	if (errors.length) {
-    	stderr('Errors encountered:');
-    	for (const e of errors) stderr(`  ${e}`);
-	}
-	await client.close();
-	process.exit(2);
+    stderr('Timeout waiting for tests');
+    if (errors.length) {
+        stderr('Errors encountered:');
+        for (const e of errors) stderr(`  ${e}`);
+    }
+    await client.close();
+    process.exit(2);
 }
 
 const [cmd, ...args] = process.argv.slice(2);
 
-function parseTimeout(args: string[]): number | undefined {
-    const idx = args.indexOf('--timeout');
-    if (idx === -1) return undefined;
-    const val = Number(args[idx + 1]);
-    if (isNaN(val) || val <= 0) {
-        stderr('--timeout must be a positive number (seconds)');
-        process.exit(1);
+function parseRunArgs(args: string[]): RunOptions {
+    const opts: RunOptions = {};
+
+    const flagArgs = new Set<number>();
+
+    const timeoutIdx = args.indexOf('--timeout');
+    if (timeoutIdx !== -1) {
+        const val = Number(args[timeoutIdx + 1]);
+        if (isNaN(val) || val <= 0) {
+            stderr('--timeout must be a positive number (seconds)');
+            process.exit(1);
+        }
+        opts.timeoutMs = val * 1000;
+        flagArgs.add(timeoutIdx);
+        flagArgs.add(timeoutIdx + 1);
     }
-    return val * 1000;
+
+    if (args.includes('--quiet')) {
+        opts.quiet = true;
+        flagArgs.add(args.indexOf('--quiet'));
+    }
+
+    if (args.includes('--fail-fast')) {
+        opts.failFast = true;
+        flagArgs.add(args.indexOf('--fail-fast'));
+    }
+
+    opts.filter = args.find((_, i) => !flagArgs.has(i));
+    return opts;
 }
 
 switch (cmd) {
     case 'run': {
-    	const timeout = parseTimeout(args);
-    	const filter = args.find((a, i) => a !== '--timeout' && args[i - 1] !== '--timeout');
-    	await run(filter, timeout);
-    	break;
+        await run(parseRunArgs(args));
+        break;
     }
     case 'eval':
-    	if (!args.length) {
-        	stderr('Usage: ember-test-runner eval <expression>');
-        	process.exit(1);
-    	}
-    	await evaluate(args.join(' '));
-    	break;
+        if (!args.length) {
+            stderr('Usage: ember-test-runner eval <expression>');
+            process.exit(1);
+        }
+        await evaluate(args.join(' '));
+        break;
     case 'screenshot':
-    	await screenshot();
-    	break;
+        await screenshot();
+        break;
     case 'clean':
-    	await cleanup();
-    	break;
+        await cleanup();
+        break;
     default:
         stdout(`Usage: ember-test-runner <command> [args]
 
 Commands:
-  run [filter] [--timeout <seconds>]   Run tests and wait for results
-  eval <expression>                    Evaluate JS in the test page
-  screenshot                           Screenshot the test page
-  clean                                Cleanup after yourself (kill Chrome)
+  run [filter] [options]   Run tests and wait for results
+    --timeout <seconds>    Set test timeout (default: 120)
+    --quiet                Concise output (no progress, short source locations)
+    --fail-fast            Stop on first failure
+  eval <expression>        Evaluate JS in the test page
+  screenshot               Screenshot the test page
+  clean                    Cleanup after yourself (kill Chrome)
 `);
         process.exit(cmd ? 1 : 0);
 }

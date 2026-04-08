@@ -14,10 +14,25 @@ npm install
 npx tsx index.ts <command>
 ```
 
-| Command                        | Description                       |
-|--------------------------------|-----------------------------------|
-| `run [filter] [--timeout <s>]` | Run tests (default 120s timeout)  |
-| `eval <expression>`            | Evaluate JS in the test page      |
-| `screenshot`                   | Screenshot the test page          |
-| `clean`                        | Kill the headless Chrome instance |
+| Command                | Description                       |
+|------------------------|-----------------------------------|
+| `run [filter]`         | Run tests and wait for results    |
+| `eval <expression>`    | Evaluate JS in the test page      |
+| `screenshot`           | Screenshot the test page (PNG)    |
+| `clean`                | Kill the headless Chrome instance |
 
+### Run flags
+
+| Flag               | Description                                  |
+|--------------------|----------------------------------------------|
+| `--timeout <secs>` | Test timeout in seconds (default: 120)       |
+| `--quiet`          | No progress output, concise source locations |
+| `--fail-fast`      | Stop on first failure                        |
+
+### Exit codes
+
+`0` all passed, `1` failures, `2` timeout.
+
+### Output
+
+stdout has test results (summary + failures). stderr has progress and diagnostics (`--quiet` suppresses stderr).
