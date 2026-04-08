@@ -4,6 +4,10 @@
   "description": "Run Ember QUnit tests via the dev server",
   "license": "MIT",
   "author": "Adam Stover",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adam-stover/ember-test-runner.git"
+  },
   "type": "module",
   "bin": {
     "ember-test-runner": "dist/index.js"

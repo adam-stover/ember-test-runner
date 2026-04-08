@@ -1,5 +1,7 @@
 # ember-test-runner
 
+[![npm](https://img.shields.io/npm/v/ember-test-runner)](https://www.npmjs.com/package/ember-test-runner)
+
 Run Ember QUnit tests headlessly via Chrome DevTools Protocol. Requires a running `ember serve` dev server.
 
 ## Setup
