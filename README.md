@@ -14,10 +14,10 @@ npm install
 npx tsx index.ts <command>
 ```
 
-| Command             | Description                       |
-|---------------------|-----------------------------------|
-| `run [filter]`      | Run tests and wait for results    |
-| `eval <expression>` | Evaluate JS in the test page      |
-| `screenshot`        | Screenshot the test page          |
-| `clean`             | Kill the headless Chrome instance |
+| Command                        | Description                       |
+|--------------------------------|-----------------------------------|
+| `run [filter] [--timeout <s>]` | Run tests (default 120s timeout)  |
+| `eval <expression>`            | Evaluate JS in the test page      |
+| `screenshot`                   | Screenshot the test page          |
+| `clean`                        | Kill the headless Chrome instance |
 

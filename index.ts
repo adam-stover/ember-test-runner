@@ -8,7 +8,7 @@ import { launch } from 'chrome-launcher';
 const CHROME_PORT = 9222;
 const DEV_SERVER = 'http://localhost:4200';
 const CHECK_TIMEOUT_MS = 3_000;
-const TEST_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
 const POLL_MS = 500;
 
 const stdout = (msg: unknown) => console.log(msg);
@@ -166,7 +166,7 @@ async function handleCompletedTests(Runtime: CDP.Client['Runtime']) {
 	}
 }
 
-async function run(filter?: string): Promise<void> {
+async function run(filter?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
     if (!await isDevServerRunning()) process.exit(1);
     await launchChrome();
 
@@ -174,6 +174,16 @@ async function run(filter?: string): Promise<void> {
 	const { Page, Runtime } = client;
 	await Page.enable();
 	await Runtime.enable();
+
+	const errors: string[] = [];
+	Runtime.exceptionThrown(({ exceptionDetails }) => {
+		errors.push(exceptionDetails.exception?.description || exceptionDetails.text);
+	});
+	Runtime.consoleAPICalled(({ type, args }) => {
+		if (type === 'error') {
+        	errors.push(args.map(a => a.value || a.description || '').join(' '));
+    	}
+	});
 
 	const params = new URLSearchParams({ nolint: 'true' });
 	if (filter) params.set('filter', filter);
@@ -190,7 +200,7 @@ async function run(filter?: string): Promise<void> {
 	const start = Date.now();
 	let lastProgress = '';
 
-	while (Date.now() - start < TEST_TIMEOUT_MS) {
+	while (Date.now() - start < timeoutMs) {
     	try {
         	const { result } = await Runtime.evaluate({
     			expression: CHECK_STATUS_SCRIPT,
@@ -218,16 +228,34 @@ async function run(filter?: string): Promise<void> {
 	}
 
 	stderr('Timeout waiting for tests');
+	if (errors.length) {
+    	stderr('Errors encountered:');
+    	for (const e of errors) stderr(`  ${e}`);
+	}
 	await client.close();
 	process.exit(2);
 }
 
 const [cmd, ...args] = process.argv.slice(2);
 
+function parseTimeout(args: string[]): number | undefined {
+    const idx = args.indexOf('--timeout');
+    if (idx === -1) return undefined;
+    const val = Number(args[idx + 1]);
+    if (isNaN(val) || val <= 0) {
+        stderr('--timeout must be a positive number (seconds)');
+        process.exit(1);
+    }
+    return val * 1000;
+}
+
 switch (cmd) {
-    case 'run':
-    	await run(args[0]);
+    case 'run': {
+    	const timeout = parseTimeout(args);
+    	const filter = args.find((a, i) => a !== '--timeout' && args[i - 1] !== '--timeout');
+    	await run(filter, timeout);
     	break;
+    }
     case 'eval':
     	if (!args.length) {
         	stderr('Usage: ember-test-runner eval <expression>');
@@ -245,10 +273,10 @@ switch (cmd) {
         stdout(`Usage: ember-test-runner <command> [args]
 
 Commands:
-  run [filter]         Run tests and wait for results
-  eval <expression>    Evaluate JS in the test page
-  screenshot           Screenshot the test page
-  clean                Cleanup after yourself (kill Chrome)
+  run [filter] [--timeout <seconds>]   Run tests and wait for results
+  eval <expression>                    Evaluate JS in the test page
+  screenshot                           Screenshot the test page
+  clean                                Cleanup after yourself (kill Chrome)
 `);
         process.exit(cmd ? 1 : 0);
 }
