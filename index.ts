@@ -22,8 +22,16 @@ async function isChromeRunning(): Promise<boolean> {
     }
 }
 
-function cleanup(): void {
-    ChromeLauncher.killAll();
+async function cleanup(): Promise<void> {
+    try {
+        const info = await fetch(`http://localhost:${CHROME_PORT}/json/version`);
+        const { webSocketDebuggerUrl } = await info.json() as { webSocketDebuggerUrl: string };
+        const browser = await CDP({ target: webSocketDebuggerUrl, port: CHROME_PORT });
+        await browser.Browser.close();
+        stderr('Chrome closed.');
+    } catch (e) {
+        stderr(`Failed to close Chrome: ${e instanceof Error ? e.message : e}`);
+    }
 }
 
 async function launchChrome(): Promise<void> {
@@ -228,7 +236,7 @@ switch (cmd) {
     	await screenshot();
     	break;
     case 'clean':
-    	cleanup();
+    	await cleanup();
     	break;
     default:
         stdout(`Usage: ember-test-runner <command> [args]
