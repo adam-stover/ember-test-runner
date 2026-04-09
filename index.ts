@@ -67,22 +67,30 @@ async function getTestTab(): Promise<CDP.Client> {
     return CDP({ port: CHROME_PORT, target: created });
 }
 
-const CHECK_FAIL_FAST_SCRIPT = `(() => {
-    const failed = document.querySelector('#qunit-tests > li.fail');
-    return !!failed;
-})()`;
-
 const CHECK_STATUS_SCRIPT = `(() => {
     const banner = document.getElementById('qunit-banner');
     if (!banner) return { status: 'loading' };
     if (banner.className.includes('qunit-pass')) return { status: 'pass' };
     if (banner.className.includes('qunit-fail')) return { status: 'fail' };
-    const p = document.getElementById('qunit-testresult');
-    return { status: 'running', progress: p?.textContent || '' };
+    const d = document.getElementById('qunit-testresult-display');
+    const progress = (d?.innerText || '').replace(/Rerun.*$/, '').trim();
+    return { status: 'running', progress };
+})()`;
+
+const CHECK_STATUS_FAIL_FAST_SCRIPT = `(() => {
+    const banner = document.getElementById('qunit-banner');
+    if (!banner) return { status: 'loading' };
+    if (banner.className.includes('qunit-pass')) return { status: 'pass' };
+    if (banner.className.includes('qunit-fail')) return { status: 'fail' };
+    if (document.querySelector('#qunit-tests > li.fail')) return { status: 'fail' };
+    const d = document.getElementById('qunit-testresult-display');
+    const progress = (d?.innerText || '').replace(/Rerun.*$/, '').trim();
+    return { status: 'running', progress };
 })()`;
 
 const EXTRACT_RESULTS_SCRIPT = `(() => {
-    const el = document.getElementById('qunit-testresult');
+    const d = document.getElementById('qunit-testresult-display');
+    const summary = (d?.innerText || '').replace(/Rerun.*$/, '').trim();
     const failures = [...document.querySelectorAll('#qunit-tests > li.fail')].map(li => {
         const module = li.querySelector('.module-name')?.textContent || '';
         const name = li.querySelector('.test-name')?.textContent || '';
@@ -94,7 +102,7 @@ const EXTRACT_RESULTS_SCRIPT = `(() => {
         }));
         return { module, name, assertions };
     });
-    return { summary: el?.textContent || '', failures };
+    return { summary, failures };
 })()`;
 
 function sleep(ms: number): Promise<void> {
@@ -143,12 +151,12 @@ function extractTestSource(source: string): string {
     // Find the first frame pointing to a test file, strip the URL noise
     const lines = source.split('\n');
     for (const line of lines) {
-        const match = line.match(/\/(tests\/[^?]+)\??[^:]*:(\d+):\d+/);
+        const match = line.match(/\/(tests\/[^?#]+)[^:]*:(\d+)(?::\d+)?/);
         if (match) return `at ${match[1]}:${match[2]}`;
     }
-    // Fallback: try to extract any .gjs/.js file reference
+    // Fallback: try to extract any source file reference (not .map files)
     for (const line of lines) {
-        const match = line.match(/\/([^/]+\.(?:gjs|gts|js|ts))\??[^:]*:(\d+):\d+/);
+        const match = line.match(/\/([^/]+\.(?:gjs|gts|js|ts))(?<!\.map)[^:]*:(\d+)(?::\d+)?/);
         if (match) return `at ${match[1]}:${match[2]}`;
     }
     return source.trim().split('\n')[0];
@@ -232,11 +240,12 @@ async function run({ filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, fail
 
     const start = Date.now();
     let lastProgress = '';
+    const statusScript = failFast ? CHECK_STATUS_FAIL_FAST_SCRIPT : CHECK_STATUS_SCRIPT;
 
     while (Date.now() - start < timeoutMs) {
         try {
             const { result } = await Runtime.evaluate({
-                expression: CHECK_STATUS_SCRIPT,
+                expression: statusScript,
                 returnByValue: true,
             });
             const s = result.value as {
@@ -248,19 +257,6 @@ async function run({ filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, fail
                 await handleCompletedTests(Runtime, quiet);
                 await client.close();
                 process.exit(s.status === 'pass' ? 0 : 1);
-            }
-
-            // Fail fast: check for any failed test while still running
-            if (failFast && s?.status === 'running') {
-                const { result: ffResult } = await Runtime.evaluate({
-                    expression: CHECK_FAIL_FAST_SCRIPT,
-                    returnByValue: true,
-                });
-                if (ffResult.value === true) {
-                    await handleCompletedTests(Runtime, quiet);
-                    await client.close();
-                    process.exit(1);
-                }
             }
 
             if (!quiet && s?.progress && s.progress !== lastProgress) {
