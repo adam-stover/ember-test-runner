@@ -1,12 +1,12 @@
 {
   "name": "ember-test-runner",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Run Ember QUnit tests via the dev server",
   "license": "MIT",
   "author": "Adam Stover",
   "repository": {
     "type": "git",
-    "url": "https://github.com/adam-stover/ember-test-runner.git"
+    "url": "git+https://github.com/adam-stover/ember-test-runner.git"
   },
   "type": "module",
   "bin": {
