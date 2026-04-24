@@ -2,7 +2,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import CDP from 'chrome-remote-interface';
-import { launch } from 'chrome-launcher';
+import { launch, type LaunchedChrome } from 'chrome-launcher';
+
+let launchedChrome: LaunchedChrome | null = null;
+
+function killLaunchedChrome(): void {
+    if (launchedChrome) {
+        launchedChrome.kill();
+        launchedChrome = null;
+    }
+}
+
+// chrome-launcher handles SIGINT; we cover SIGTERM.
+// No exit handler - Chrome persists across CLI commands by design.
+// Users run `clean` to explicitly kill it.
+process.once('SIGTERM', () => {
+    killLaunchedChrome();
+    process.exit();
+});
 
 export const DEFAULT_URL = 'http://localhost:4200';
 export const DEFAULT_CHROME_PORT = 9222;
@@ -36,11 +53,11 @@ export function parseGlobalOptions(args: string[]): { options: GlobalOptions; re
                 throw new Error('--url requires a value');
             }
             try {
-                opts.url = normalizeUrl(val);
-                const u = new URL(opts.url);
+                const u = new URL(val);
                 if (u.protocol !== 'http:' && u.protocol !== 'https:') {
                     throw new Error('protocol must be http or https');
                 }
+                opts.url = normalizeUrl(val);
             } catch {
                 throw new Error(`--url must be a valid http(s) URL (got: ${val})`);
             }
@@ -61,7 +78,7 @@ export function parseGlobalOptions(args: string[]): { options: GlobalOptions; re
 
 async function isChromeRunning(port: number): Promise<boolean> {
     try {
-        const r = await fetch(`http://localhost:${port}/json/version`);
+        const r = await fetch(`http://localhost:${port}/json/version`, { redirect: 'manual' });
         return r.ok;
     } catch {
         return false;
@@ -69,8 +86,9 @@ async function isChromeRunning(port: number): Promise<boolean> {
 }
 
 export async function cleanup(port: number): Promise<void> {
+    killLaunchedChrome();
     try {
-        const info = await fetch(`http://localhost:${port}/json/version`);
+        const info = await fetch(`http://localhost:${port}/json/version`, { redirect: 'manual' });
         const { webSocketDebuggerUrl } = await info.json() as { webSocketDebuggerUrl: string };
         const browser = await CDP({ target: webSocketDebuggerUrl, port });
         await browser.Browser.close();
@@ -84,12 +102,14 @@ async function launchChrome(port: number): Promise<void> {
     if (await isChromeRunning(port)) return;
 
     console.error('Launching headless Chrome...');
-    await launch({
-        port,
-        chromeFlags: [
-            '--headless',
-        ],
-    });
+    try {
+        launchedChrome = await launch({
+            port,
+            chromeFlags: ['--headless'],
+        });
+    } catch (e) {
+        throw new Error(`Failed to launch Chrome on port ${port}: ${e instanceof Error ? e.message : e}. Is the port already in use?`);
+    }
 }
 
 export function isConnectionRefused(e: unknown): boolean {
@@ -176,7 +196,7 @@ export async function screenshot(globalOpts: GlobalOptions): Promise<void> {
         await writeFile(path, Buffer.from(data, 'base64'));
         console.log(path);
     } finally {
-        await client.close();
+        client.close();
     }
 }
 
@@ -202,7 +222,7 @@ export async function evaluate(globalOpts: GlobalOptions, expression: string): P
             : result.value;
         console.log(output);
     } finally {
-        await client.close();
+        client.close();
     }
 }
 
@@ -283,7 +303,7 @@ export async function run(globalOpts: GlobalOptions, { filter, timeoutMs = DEFAU
         });
         Runtime.consoleAPICalled(({ type, args }) => {
             if (type === 'error') {
-                errors.push(args.map(a => a.value || a.description || '').join(' '));
+                errors.push(args.map(a => a.value ?? a.description ?? '').join(' '));
             }
         });
 

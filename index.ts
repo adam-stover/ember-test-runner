@@ -10,10 +10,10 @@ import {
 } from './lib.js';
 
 async function main() {
-    const [_cmd, ..._args] = process.argv.slice(2);
+    const rawArgs = process.argv.slice(2);
     const { options: globalOpts, remaining } = (() => {
         try {
-            return parseGlobalOptions([_cmd, ..._args]);
+            return parseGlobalOptions(rawArgs);
         } catch (e) {
             console.error(e instanceof Error ? e.message : String(e));
             process.exit(1);
@@ -35,6 +35,7 @@ async function main() {
             const result = await run(globalOpts, runOpts);
             printRunResult(result, runOpts.quiet ?? false);
             process.exit(result.status === 'pass' ? 0 : result.status === 'fail' ? 1 : 2);
+            break;
         }
         case 'eval':
             if (!args.length) {
