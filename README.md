@@ -31,6 +31,15 @@ npx ember-test-runner <command>
 | `--quiet`          | No progress output, concise source locations |
 | `--fail-fast`      | Stop on first failure                        |
 
+### Global flags
+
+| Flag                | Description                                             |
+|---------------------|---------------------------------------------------------|
+| `--url <url>`       | Dev server base URL (default: `http://localhost:4200`) |
+| `--chrome-port <n>` | Chrome remote-debugging port (default: `9222`)          |
+
+These flags apply to all commands (`run`, `eval`, `screenshot`, `clean`).
+
 ### Exit codes
 
 `0` all passed, `1` failures, `2` timeout.

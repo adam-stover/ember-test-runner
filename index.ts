@@ -5,29 +5,81 @@ import { writeFile } from 'node:fs/promises';
 import CDP from 'chrome-remote-interface';
 import { launch } from 'chrome-launcher';
 
-const CHROME_PORT = 9222;
-const DEV_SERVER = 'http://localhost:4200';
+const DEFAULT_URL = 'http://localhost:4200';
+const DEFAULT_CHROME_PORT = 9222;
 const CHECK_TIMEOUT_MS = 3_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const POLL_MS = 500;
+const DEV_SERVER_RETRIES = 5;
+const DEV_SERVER_RETRY_MS = 1_000;
 
 const stdout = (msg: unknown) => console.log(msg);
 const stderr = (msg: unknown) => console.error(msg);
 
-async function isChromeRunning(): Promise<boolean> {
+interface GlobalOptions {
+    url: string;
+    chromePort: number;
+}
+
+function normalizeUrl(url: string): string {
+    return url.replace(/\/$/, '');
+}
+
+function parseGlobalOptions(args: string[]): { options: GlobalOptions; remaining: string[] } {
+    const opts: GlobalOptions = {
+        url: DEFAULT_URL,
+        chromePort: DEFAULT_CHROME_PORT,
+    };
+    const remaining: string[] = [];
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--url') {
+            const val = args[++i];
+            if (!val) {
+                stderr('--url requires a value');
+                process.exit(1);
+            }
+            try {
+                opts.url = normalizeUrl(val);
+                const u = new URL(opts.url);
+                if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+                    throw new Error('protocol must be http or https');
+                }
+            } catch {
+                stderr(`--url must be a valid http(s) URL (got: ${val})`);
+                process.exit(1);
+            }
+        } else if (arg === '--chrome-port') {
+            const val = args[++i];
+            const num = Number(val);
+            if (!val || !Number.isInteger(num) || num < 1 || num > 65535) {
+                stderr('--chrome-port must be an integer between 1 and 65535');
+                process.exit(1);
+            }
+            opts.chromePort = num;
+        } else {
+            remaining.push(arg);
+        }
+    }
+
+    return { options: opts, remaining };
+}
+
+async function isChromeRunning(port: number): Promise<boolean> {
     try {
-        const r = await fetch(`http://localhost:${CHROME_PORT}/json/version`);
+        const r = await fetch(`http://localhost:${port}/json/version`);
         return r.ok;
     } catch {
         return false;
     }
 }
 
-async function cleanup(): Promise<void> {
+async function cleanup(port: number): Promise<void> {
     try {
-        const info = await fetch(`http://localhost:${CHROME_PORT}/json/version`);
+        const info = await fetch(`http://localhost:${port}/json/version`);
         const { webSocketDebuggerUrl } = await info.json() as { webSocketDebuggerUrl: string };
-        const browser = await CDP({ target: webSocketDebuggerUrl, port: CHROME_PORT });
+        const browser = await CDP({ target: webSocketDebuggerUrl, port });
         await browser.Browser.close();
         stderr('Chrome closed.');
     } catch (e) {
@@ -35,36 +87,49 @@ async function cleanup(): Promise<void> {
     }
 }
 
-async function launchChrome(): Promise<void> {
-    if (await isChromeRunning()) return;
+async function launchChrome(port: number): Promise<void> {
+    if (await isChromeRunning(port)) return;
 
     stderr('Launching headless Chrome...');
     await launch({
-        port: CHROME_PORT,
+        port,
         chromeFlags: [
             '--headless',
         ],
     });
 }
 
-async function isDevServerRunning(): Promise<boolean> {
-    try {
-        await fetch(DEV_SERVER, { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) });
-        return true;
-    } catch {
-        stderr(`Dev server not running at ${DEV_SERVER}`)
-        return false;
+async function isDevServerRunning(url: string): Promise<boolean> {
+    for (let i = 0; i < DEV_SERVER_RETRIES; i++) {
+        try {
+            await fetch(url, { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) });
+            return true;
+        } catch {
+            if (i < DEV_SERVER_RETRIES - 1) {
+                await sleep(DEV_SERVER_RETRY_MS);
+            }
+        }
     }
+    stderr(`Dev server not running at ${url}`);
+    return false;
 }
 
-async function getTestTab(): Promise<CDP.Client> {
-    const targets = await CDP.List({ port: CHROME_PORT });
-    const tab = targets.find(t => t.type === 'page' && t.url.includes('localhost:4200'));
-    if (tab) return CDP({ port: CHROME_PORT, target: tab });
+async function getTestTab(port: number, url: string): Promise<CDP.Client> {
+    const targets = await CDP.List({ port });
+    const baseOrigin = new URL(url).origin;
+    const tab = targets.find(t => {
+        if (t.type !== 'page') return false;
+        try {
+            return new URL(t.url).origin === baseOrigin;
+        } catch {
+            return false;
+        }
+    });
+    if (tab) return CDP({ port, target: tab });
 
-    const created = await CDP.New({ port: CHROME_PORT, url: 'about:blank' });
+    const created = await CDP.New({ port, url: 'about:blank' });
 
-    return CDP({ port: CHROME_PORT, target: created });
+    return CDP({ port, target: created });
 }
 
 const CHECK_STATUS_SCRIPT = `(() => {
@@ -109,9 +174,9 @@ function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
 }
 
-async function screenshot(): Promise<void> {
-    await launchChrome();
-    const client = await getTestTab();
+async function screenshot(globalOpts: GlobalOptions): Promise<void> {
+    await launchChrome(globalOpts.chromePort);
+    const client = await getTestTab(globalOpts.chromePort, globalOpts.url);
     const { Page } = client;
 
     const { data } = await Page.captureScreenshot({ format: 'png' });
@@ -122,9 +187,9 @@ async function screenshot(): Promise<void> {
     await client.close();
 }
 
-async function evaluate(expression: string): Promise<void> {
-    await launchChrome();
-    const client = await getTestTab();
+async function evaluate(globalOpts: GlobalOptions, expression: string): Promise<void> {
+    await launchChrome(globalOpts.chromePort);
+    const client = await getTestTab(globalOpts.chromePort, globalOpts.url);
     const { Runtime } = client;
     await Runtime.enable();
 
@@ -207,11 +272,41 @@ interface RunOptions {
     failFast?: boolean;
 }
 
-async function run({ filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, failFast = false }: RunOptions = {}): Promise<void> {
-    if (!await isDevServerRunning()) process.exit(1);
-    await launchChrome();
+function parseRunArgs(args: string[]): RunOptions {
+    const opts: RunOptions = {};
+    const flagArgs = new Set<number>();
 
-    const client = await getTestTab();
+    const timeoutIdx = args.indexOf('--timeout');
+    if (timeoutIdx !== -1) {
+        const val = Number(args[timeoutIdx + 1]);
+        if (isNaN(val) || val <= 0) {
+            stderr('--timeout must be a positive number (seconds)');
+            process.exit(1);
+        }
+        opts.timeoutMs = val * 1000;
+        flagArgs.add(timeoutIdx);
+        flagArgs.add(timeoutIdx + 1);
+    }
+
+    if (args.includes('--quiet')) {
+        opts.quiet = true;
+        flagArgs.add(args.indexOf('--quiet'));
+    }
+
+    if (args.includes('--fail-fast')) {
+        opts.failFast = true;
+        flagArgs.add(args.indexOf('--fail-fast'));
+    }
+
+    opts.filter = args.find((_, i) => !flagArgs.has(i));
+    return opts;
+}
+
+async function run(globalOpts: GlobalOptions, { filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, failFast = false }: RunOptions = {}): Promise<void> {
+    if (!await isDevServerRunning(globalOpts.url)) process.exit(1);
+    await launchChrome(globalOpts.chromePort);
+
+    const client = await getTestTab(globalOpts.chromePort, globalOpts.url);
     const { Page, Runtime } = client;
     await Page.enable();
     await Runtime.enable();
@@ -228,7 +323,7 @@ async function run({ filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, fail
 
     const params = new URLSearchParams({ nolint: 'true' });
     if (filter) params.set('filter', filter);
-    const url = `${DEV_SERVER}/tests?${params}`;
+    const url = `${globalOpts.url}/tests?${params}`;
 
     if (!quiet) stderr(url);
     const navigateResult = await Page.navigate({ url });
@@ -279,42 +374,14 @@ async function run({ filter, timeoutMs = DEFAULT_TIMEOUT_MS, quiet = false, fail
     process.exit(2);
 }
 
-const [cmd, ...args] = process.argv.slice(2);
-
-function parseRunArgs(args: string[]): RunOptions {
-    const opts: RunOptions = {};
-
-    const flagArgs = new Set<number>();
-
-    const timeoutIdx = args.indexOf('--timeout');
-    if (timeoutIdx !== -1) {
-        const val = Number(args[timeoutIdx + 1]);
-        if (isNaN(val) || val <= 0) {
-            stderr('--timeout must be a positive number (seconds)');
-            process.exit(1);
-        }
-        opts.timeoutMs = val * 1000;
-        flagArgs.add(timeoutIdx);
-        flagArgs.add(timeoutIdx + 1);
-    }
-
-    if (args.includes('--quiet')) {
-        opts.quiet = true;
-        flagArgs.add(args.indexOf('--quiet'));
-    }
-
-    if (args.includes('--fail-fast')) {
-        opts.failFast = true;
-        flagArgs.add(args.indexOf('--fail-fast'));
-    }
-
-    opts.filter = args.find((_, i) => !flagArgs.has(i));
-    return opts;
-}
+const [_cmd, ..._args] = process.argv.slice(2);
+const { options: globalOpts, remaining } = parseGlobalOptions([_cmd, ..._args]);
+const cmd = remaining.shift();
+const args = remaining;
 
 switch (cmd) {
     case 'run': {
-        await run(parseRunArgs(args));
+        await run(globalOpts, parseRunArgs(args));
         break;
     }
     case 'eval':
@@ -322,13 +389,13 @@ switch (cmd) {
             stderr('Usage: ember-test-runner eval <expression>');
             process.exit(1);
         }
-        await evaluate(args.join(' '));
+        await evaluate(globalOpts, args.join(' '));
         break;
     case 'screenshot':
-        await screenshot();
+        await screenshot(globalOpts);
         break;
     case 'clean':
-        await cleanup();
+        await cleanup(globalOpts.chromePort);
         break;
     default:
         stdout(`Usage: ember-test-runner <command> [args]
@@ -341,7 +408,10 @@ Commands:
   eval <expression>        Evaluate JS in the test page
   screenshot               Screenshot the test page
   clean                    Cleanup after yourself (kill Chrome)
+
+Global flags:
+  --url <url>              Dev server base URL (default: http://localhost:4200)
+  --chrome-port <port>     Chrome remote-debugging port (default: 9222)
 `);
         process.exit(cmd ? 1 : 0);
 }
-
